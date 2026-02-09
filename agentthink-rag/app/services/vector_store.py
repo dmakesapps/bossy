@@ -39,25 +39,45 @@ class VectorStoreService:
         self.port = port
         self._client = None
         self._is_connected = False
+        self._is_local_mode = False
         
         self._connect()
     
+    @property
+    def is_local_mode(self) -> bool:
+        """Return whether using local in-memory mode."""
+        return self._is_local_mode
+
     def _connect(self) -> None:
         """Establish connection to Qdrant."""
         try:
             from qdrant_client import QdrantClient
             
-            self._client = QdrantClient(host=self.host, port=self.port)
+            logger.info(f"Attempting to connect to Qdrant at {self.host}:{self.port}")
+            self._client = QdrantClient(host=self.host, port=self.port, timeout=2.0)
             
             # Test connection by getting collections
             self._client.get_collections()
             self._is_connected = True
+            self._is_local_mode = False
             
             logger.info(f"Connected to Qdrant at {self.host}:{self.port}")
             
         except Exception as e:
-            logger.error(f"Failed to connect to Qdrant: {e}")
-            self._is_connected = False
+            logger.warning(f"Failed to connect to Qdrant: {e}")
+            logger.info("Falling back to local in-memory Qdrant instance for development")
+            
+            try:
+                from qdrant_client import QdrantClient
+                # Initialize local in-memory client
+                self._client = QdrantClient(location=":memory:")
+                self._is_connected = True
+                self._is_local_mode = True
+                logger.info("Initialized local in-memory Qdrant instance")
+            except Exception as inner_e:
+                logger.error(f"Failed to initialize local Qdrant: {inner_e}")
+                self._is_connected = False
+                self._is_local_mode = False
     
     @property
     def connected(self) -> bool:

@@ -27,6 +27,7 @@ async def health_check(request: Request, response: Response):
     
     embedding_model_loaded = embedder.loaded if embedder else False
     qdrant_connected = vector_store.connected if vector_store else False
+    is_local_mode = getattr(vector_store, "is_local_mode", False) if vector_store else False
     
     is_healthy = qdrant_connected and embedding_model_loaded
     
@@ -36,5 +37,6 @@ async def health_check(request: Request, response: Response):
     return {
         "status": "healthy" if is_healthy else "unhealthy",
         "qdrant_connected": qdrant_connected,
+        "is_local_mode": is_local_mode,
         "embedding_model_loaded": embedding_model_loaded
     }
