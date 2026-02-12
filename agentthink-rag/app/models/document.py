@@ -38,7 +38,7 @@ class DocumentStatusResponse(BaseModel):
     document_id: str = Field(
         description="Unique identifier for the document"
     )
-    status: Literal["pending", "processing", "ready", "error"] = Field(
+    status: Literal["pending", "processing", "ready", "error", "needs_reprocessing"] = Field(
         description="Current processing status"
     )
     chunk_count: int = Field(

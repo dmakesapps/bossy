@@ -15,7 +15,7 @@ pandas
 
 # Embedding & Vector Store
 sentence-transformers
-qdrant-client
+qdrant-client>=1.7.0
 
 # Utilities
 python-magic

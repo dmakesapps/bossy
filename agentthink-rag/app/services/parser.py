@@ -107,18 +107,28 @@ class DocumentParser:
             doc = fitz.open(file_path)
             
             for page_num, page in enumerate(doc, start=1):
-                # Primary extraction using get_text
+                # Primary extraction using get_text("text")
                 text = page.get_text("text")
                 
-                # If text is empty or not meaningful, try blocks extraction
-                if not text or not is_meaningful_text(text):
-                    blocks = page.get_text("blocks")
-                    text_parts = []
-                    for block in blocks:
-                        if len(block) >= 5 and isinstance(block[4], str):
-                            text_parts.append(block[4])
-                    text = "\n".join(text_parts)
+                # If text is messy or appears limited, use blocks extraction with sorting
+                # for more robust reading order (crucial for unformatted/fragmented PDFs)
+                blocks = page.get_text("blocks")
+                # Sort blocks: vertically (y1 coordinate is blocks[1]), then horizontally (x0 is blocks[0])
+                blocks.sort(key=lambda b: (b[1], b[0]))
                 
+                sorted_text_parts = []
+                for b in blocks:
+                    if len(b) >= 5 and isinstance(b[4], str):
+                        content = b[4].strip()
+                        if content:
+                            sorted_text_parts.append(content)
+                
+                sorted_text = "\n".join(sorted_text_parts)
+                
+                # Use the sorted text if it's more substantial or as primary
+                if len(sorted_text) > len(text) * 0.9:
+                    text = sorted_text
+                    
                 # Clean the extracted text
                 text = clean_text(text)
                 

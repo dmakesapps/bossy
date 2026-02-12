@@ -11,6 +11,7 @@ import logging
 from typing import Optional, Any
 from uuid import UUID
 
+from qdrant_client import QdrantClient
 from app.services.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,6 @@ class VectorStoreService:
     def _connect(self) -> None:
         """Establish connection to Qdrant."""
         try:
-            from qdrant_client import QdrantClient
-            
             logger.info(f"Attempting to connect to Qdrant at {self.host}:{self.port}")
             self._client = QdrantClient(host=self.host, port=self.port, timeout=2.0)
             
@@ -68,7 +67,6 @@ class VectorStoreService:
             logger.info("Falling back to local in-memory Qdrant instance for development")
             
             try:
-                from qdrant_client import QdrantClient
                 # Initialize local in-memory client
                 self._client = QdrantClient(location=":memory:")
                 self._is_connected = True
@@ -228,19 +226,43 @@ class VectorStoreService:
                 logger.debug(f"Collection '{collection_name}' does not exist")
                 return []
             
-            # Perform search
-            results = self._client.search(
-                collection_name=collection_name,
-                query_vector=query_embedding,
-                limit=top_k,
-                score_threshold=score_threshold
-            )
+            # Perform search with defensive check for method name
+            # Modern Qdrant (1.7+) uses 'query_points', older versions use 'search'
+            if hasattr(self._client, "query_points"):
+                results_obj = self._client.query_points(
+                    collection_name=collection_name,
+                    query=query_embedding,
+                    limit=top_k,
+                    score_threshold=score_threshold
+                )
+                # query_points returns a QueryResponse object with a 'points' attribute
+                results = results_obj.points
+            elif hasattr(self._client, "search"):
+                results = self._client.search(
+                    collection_name=collection_name,
+                    query_vector=query_embedding,
+                    limit=top_k,
+                    score_threshold=score_threshold
+                )
+            elif hasattr(self._client, "search_points"):
+                results = self._client.search_points(
+                    collection_name=collection_name,
+                    query_vector=query_embedding,
+                    limit=top_k,
+                    score_threshold=score_threshold
+                )
+            else:
+                available_methods = [m for m in dir(self._client) if not m.startswith("_")]
+                logger.error(f"QdrantClient methods: {available_methods}")
+                raise AttributeError(f"QdrantClient has no 'query_points', 'search', or 'search_points' method. Available: {available_methods}")
+            
+            logger.debug(f"Search results for '{collection_name}': {len(results)} hits")
             
             # Transform to result dicts
             search_results = []
             for hit in results:
                 result = {
-                    "chunk_id": hit.payload.get("chunk_id"),
+                    "chunk_id": getattr(hit, "id", None) or hit.payload.get("chunk_id"),
                     "document_id": hit.payload.get("document_id"),
                     "document_name": hit.payload.get("document_name"),
                     "content": hit.payload.get("content"),
@@ -390,3 +412,45 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error getting collection info: {e}")
             return None
+
+    def count_document_chunks(self, project_id: str, document_id: str) -> int:
+        """
+        Count the number of chunks stored for a specific document.
+        
+        Queries Qdrant with a filter on document_id to get the real count.
+        This survives container restarts since Qdrant persists data.
+        
+        Args:
+            project_id: Project identifier
+            document_id: Document identifier
+            
+        Returns:
+            Number of chunks stored for this document
+        """
+        if not self._is_connected or self._client is None:
+            return 0
+        
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        
+        collection_name = self._get_collection_name(project_id)
+        
+        try:
+            if not self._client.collection_exists(collection_name):
+                return 0
+            
+            count_result = self._client.count(
+                collection_name=collection_name,
+                count_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=document_id)
+                        )
+                    ]
+                )
+            )
+            return count_result.count
+            
+        except Exception as e:
+            logger.error(f"Error counting chunks for document {document_id}: {e}")
+            return 0

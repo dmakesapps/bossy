@@ -173,8 +173,8 @@ async def list_documents(request: Request, project_id: str):
     List all documents for a given project.
     
     Fetches documents from the upload directory and merges with in-memory status.
-    If a document exists on disk but not in memory (e.g. after restart), 
-    it is assumed to be 'ready'.
+    If a document exists on disk but not in memory (e.g. after restart),
+    we query Qdrant for the real chunk count to determine the true status.
     
     Args:
         project_id: Project identifier
@@ -183,6 +183,7 @@ async def list_documents(request: Request, project_id: str):
         List of documents with status
     """
     config = get_config(request)
+    vector_store = request.app.state.vector_store
     project_dir = Path(config.UPLOAD_DIR) / project_id
     
     documents = []
@@ -206,7 +207,7 @@ async def list_documents(request: Request, project_id: str):
             # Get creation time
             created_at = file_path.stat().st_ctime
             
-            # Get status from memory or fallback
+            # Get status from memory first
             status_info = get_status(document_id)
             
             if status_info:
@@ -214,10 +215,24 @@ async def list_documents(request: Request, project_id: str):
                 chunk_count = status_info.chunk_count
                 error_message = status_info.error_message
             else:
-                # Fallback for persisted files
-                doc_status = "ready"
-                chunk_count = 0  # We don't know the count without checking DB/persisting it
-                error_message = None
+                # No in-memory status (e.g. after container restart).
+                # Query Qdrant for the real chunk count.
+                chunk_count = vector_store.count_document_chunks(project_id, document_id)
+                
+                if chunk_count > 0:
+                    doc_status = "ready"
+                    error_message = None
+                    # Restore the in-memory status so subsequent calls are fast
+                    update_status(document_id, "ready", chunk_count=chunk_count)
+                else:
+                    # File exists on disk but has no indexed chunks — needs reprocessing
+                    doc_status = "needs_reprocessing"
+                    error_message = "Document exists but has no indexed chunks. Please re-upload."
+            
+            # Validation: never report 'ready' with chunk_count=0
+            if doc_status == "ready" and chunk_count == 0:
+                doc_status = "needs_reprocessing"
+                error_message = "Document marked ready but has no indexed chunks."
             
             documents.append(DocumentListItem(
                 document_id=document_id,
@@ -296,4 +311,68 @@ async def delete_document(
     return DocumentDeleteResponse(
         status="deleted",
         chunks_removed=chunks_removed
+    )
+
+
+@router.post("/{document_id}/reprocess", response_model=DocumentUploadResponse, status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_document(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    document_id: str,
+    project_id: str
+):
+    """
+    Re-process a document that exists on disk but has no indexed chunks.
+    
+    This is useful after a container restart if the original processing
+    failed silently, or if chunks were lost from the vector store.
+    
+    Args:
+        document_id: The document identifier
+        project_id: Project identifier (query parameter)
+    
+    Returns:
+        202 Accepted with processing status
+    """
+    config = get_config(request)
+    processor = get_processor(request)
+    
+    # Find the file on disk
+    doc_dir = Path(config.UPLOAD_DIR) / project_id / document_id
+    
+    if not doc_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document directory not found: {document_id}"
+        )
+    
+    files = list(doc_dir.glob("*"))
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No file found in document directory: {document_id}"
+        )
+    
+    file_path = files[0]
+    filename = file_path.name
+    
+    # Set initial processing status
+    update_status(document_id, "processing")
+    
+    # Start background processing
+    background_tasks.add_task(
+        _process_document_task,
+        processor,
+        str(file_path),
+        project_id,
+        document_id,
+        filename
+    )
+    
+    logger.info(f"Document queued for reprocessing: {document_id} ({filename})")
+    
+    return DocumentUploadResponse(
+        status="processing",
+        document_id=document_id,
+        message="Document queued for reprocessing"
     )

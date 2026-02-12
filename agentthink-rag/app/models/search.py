@@ -24,7 +24,7 @@ class SearchRequest(BaseModel):
         description="Maximum number of results to return"
     )
     score_threshold: float = Field(
-        default=0.7,
+        default=0.3,
         ge=0.0,
         le=1.0,
         description="Minimum similarity score threshold"
@@ -36,7 +36,7 @@ class SearchRequest(BaseModel):
                 "query": "What are the key financial projections for Q3?",
                 "project_id": "proj_xyz",
                 "top_k": 5,
-                "score_threshold": 0.7
+                "score_threshold": 0.3
             }
         }
     }

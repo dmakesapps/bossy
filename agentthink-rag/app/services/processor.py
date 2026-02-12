@@ -143,6 +143,11 @@ class DocumentProcessor:
             logger.info(f"Processing document: {filename} (type: {file_ext})")
             update_status(document_id, "processing")
             
+            # Step 0: Clear existing chunks for this document (if any)
+            # This ensures we don't double up on chunks if re-processing
+            logger.info(f"Clearing existing chunks for document {document_id}")
+            self.delete_document(project_id, document_id)
+            
             # Step 2: Parse
             logger.info(f"Step 1/4 Parse: extracting from {filename}")
             sections = self.parser.parse(file_path, file_ext)
